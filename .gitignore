@@ -3,3 +3,14 @@ ssl/
 .directory
 .idea
 *.tgz
+
+# Go build artifacts
+build/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
