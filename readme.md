@@ -1,136 +1,156 @@
-# WSTUN - Tunnels and Reverse Tunnels over WebSocket for Node.js
+# wstun-go - WebSocket Tunneling for Embedded Systems
 
-[![npm version](https://badge.fury.io/js/%40mdslab%2Fwstun.svg)](https://badge.fury.io/js/%40mdslab%2Fwstun)
+A high-performance Go implementation of wstun optimized for embedded devices like OpenWRT.
 
-## Overview
+This repository contains a Go-first implementation of the wstun tunneling tool, designed for resource-constrained embedded systems. The Go binary is small, statically linkable, and suitable for cross-compilation to targets such as ARM and MIPS commonly found on routers and IoT devices.
 
-A set of Node.js tools to establish TCP tunnels (or TCP reverse tunnels) over WebSocket connections for circumventing the problem of directly connect to hosts behind a strict firewall or without public IP. It also supports WebSocket Secure (wss) connections.
+## Key Benefits
+
+- Embedded-ready: optimized for OpenWRT, DD-WRT, and similar Linux distributions
+- Cross-platform: easy cross-compilation for ARM, MIPS, x86, and more
+- Static binary: no runtime dependencies required on the target
+- Low memory and CPU footprint suitable for constrained devices
+- Fast startup and reliable behavior under systemd or init scripts
+
+## Features
+
+- Forward TCP tunnels over WebSocket
+- Reverse TCP tunnels over WebSocket
+- SSL/TLS support (WSS)
+- Client authorization via allowlist
+- UUID-based client identification
+- Bidirectional binary data streaming with flow control
 
 ## Installation
-```
-npm install @mdslab/wstun
-```
 
-## Usage (from a Node.js application)
+### Prerequisites
 
-### Instantiation of a tunnel server 
-```JavaScript
-var wstun = require("@mdslab/wstun");
+- Go 1.21 or later
+- Make (optional)
 
-// without security
-server = new wstun.server();
+### Build from source
 
-// or with security (<PRIVATE-KEY-PATH> and <PUBLIC-KEY-PATH> are the paths of the private and public keys in .pem formats)
-server = new wstun.server({ssl:true, key:"<PRIVATE-KEY-PATH>", cert:"<PUBLIC-KEY-PATH>"});
-
-//start the server (<PORT> is the listening port)
-server.start(<PORT>)
+```bash
+cd wstun
+go mod download
+make build
+# or
+go build -ldflags="-s -w" -o wstun cmd/wstun/main.go
 ```
 
-### Implementation of a tunnel client
-```JavaScript
-var wstun = require("@mdslab/wstun");
+### Cross compilation
 
-client = new wstun.client();
+Use the provided Makefile targets (e.g. `make linux-arm`, `make linux-mipsle`, `make openwrt-mips`).
 
-// without security
-wstunHost = 'ws://wstunServerIP:wstunPort';
+## Usage
 
-// or with security 
-wstunHost = 'wss://wstunServerIP:wstunPort';
+### Forward tunnel
 
-// <localPort> is the port on the localhost on which the tunneled service will be reachable
-// <remoteHost>:<remotePort> is the endpoint of the service to be tunneled
-client.start(<localPort>, wstunHost, '<remoteHost>:<remotePort>');
+Server:
+```bash
+./wstun -s 8080
+# with SSL
+./wstun -s 8443 --ssl true --key server.key --cert server.crt
 ```
 
-### Instantiation of a reverse tunnel server
-```JavaScript
-var wstun = require("@mdslab/wstun");
-
-// without security
-reverse_server = new wstun.server_reverse();
-
-// or with security (<PRIVATE-KEY-PATH> and <PUBLIC-KEY-PATH> are the paths of the private and public keys in .pem formats)
-reverse_server = new wstun.server_reverse({ssl:true, key:"<PRIVATE-KEY-PATH>", cert:"<PUBLIC-KEY-PATH>"});
-
-//start the server (<PORT> is the listening port)
-reverse_server.start(<PORT>);
-
-``` 
-### Implementation of a reverse tunnel client
-```JavaScript   
-var wstun = require("reverse-wstunnel");
-
-reverse_client = new wstun.client_reverse();
-
-// without security
-wstunHost = 'ws://wstunServerIP:wstunPort';
-
-// or with security 
-wstunHost = 'wss://wstunServerIP:wstunPort';
-
-// <publicPort> is the port on the reverse tunnel server on which the tunneled service will be reachable
-// <remoteHost>:<remotePort> is the endpoint of the service to be reverse tunneled
-reverse_client.start(<publicPort>, wstunHost, '<remoteHost>:<remotePort>');
+Client:
+```bash
+./wstun -t 33:remotehost:33 ws://serverhost:8080
 ```
 
-## Usage (from command line)
-A command line tool (wstun.js) is also available in the bin directory.
+### Reverse tunnel
 
-Examples about how to run a tunnel server:
-```
-//without security
-./wstun.js -s 8080
-
-//with security
-./wstun.js -s 8080 --ssl=true --key="<PRIVATE-KEY-PATH>" --cert="<PUBLIC-KEY-PATH>"
-```
-Examples about how to run a tunnel client:
-```
-//without security
-./wstun.js -t 33:2.2.2.2:33 ws://wstunServerIP:8080 
-
-//with security
-./wstun.js -t 33:2.2.2.2:33 wss://wstunServerIP:8080
-```
-In both examples, connections to localhost:33 on the client will be tunneled to 2.2.2.2:33 through the Websocket connection with the server. Note that the decision about the final destination of the tunnel is up to the client. Alternatively, it is possible to lock the final destination of the tunnel on the server side. 
-
-Examples about how to run a tunnel server locking the final tunnel destination: 
-```
-//without security 
-./wstun.js -s 8080 -t 2.2.2.2:33
-
-//with security
-./wstun.js -s 8080 -t 2.2.2.2:33 --ssl=true --key="<PRIVATE-KEY-PATH>" --cert="<PUBLIC-KEY-PATH>"
-```
-Examples about how to run a tunnel client when the final tunnel destination has been locked by the server:
-```
-//without security
-./wstun.js -t 33 ws://wstunServerIP:8080 
-
-//with security
-./wstun.js -t 33 wss://wstunServerIP:8080
+Server:
+```bash
+./wstun -r -s 8080
+# with allowlist
+./wstun -r -s 8080 -a allowlist.json
 ```
 
-Examples about how to run a reverse tunnel server:
+Client:
+```bash
+./wstun -r 2222:localhost:22 -u my-device-uuid ws://serverhost:8080
 ```
-//without security
-./wstun.js -r -s 8080
 
-//with security
-./wstun.js -r -s 8080 --ssl=true --key="<PRIVATE-KEY-PATH>" --cert="<PUBLIC-KEY-PATH>"
+### Common options
+
+```bash
+--log <file>     # Write logs to file
+--debug          # Enable debug logging
+-h, --help       # Show help message
 ```
-Examples about how to run a reverse tunnel client:
+
+## Deployment
+
+Copy the built binary to the target device and install as a service (systemd or init script) depending on the platform.
+
+Example systemd service:
+
+```ini
+[Unit]
+Description=WSTUN WebSocket Tunnel
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/wstun -r 2222:localhost:22 -u device-001 ws://tunnel-server:8080
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
 ```
-//without security
-./wstun.js -r6666:2.2.2.2:33 ws://server:8080
 
-//with security 
-./wstun.js -r6666:2.2.2.2:33 wss://server:8080
+## Configuration
+
+Allowlist file format (JSON):
+
+```json
+[
+  { "client": "device-001", "port": "2222" },
+  { "client": "device-002", "port": "3333" }
+]
 ```
-In the above examples, the client asks the server to open a TCP server on port 6666 and all connections on this port are tunneled to the client that is directely connected to 2.2.2.2:33.
 
+## Project Layout
 
-## Logging system
-WSTUN uses Log4js library to manage its logs in /var/log/wstun/
+```
+cmd/
+  wstun/              # CLI entry point
+pkg/
+  tunnel/             # Core tunneling logic
+  logger/             # Logging utilities
+Makefile              # Build helpers
+go.mod                # Go dependencies
+```
+
+## Testing
+
+```bash
+# Run unit tests (if any)
+make test
+
+# Example manual test
+# Terminal 1: start server
+./wstun -s 8080
+
+# Terminal 2: start client
+./wstun -t 8888:example.com:80 ws://localhost:8080
+
+# Terminal 3: test
+curl http://localhost:8888
+```
+
+## Troubleshooting
+
+- Use `--debug` for verbose logs.
+- Verify network connectivity and firewall rules.
+- For small devices, consider using UPX to compress the binary.
+
+## License
+
+Apache License 2.0
+
+---
+
+This file documents the Go implementation only. The original Node.js implementation has been moved to the `node_version/` folder.

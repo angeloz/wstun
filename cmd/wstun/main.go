@@ -61,6 +61,32 @@ Examples:
 `
 
 func main() {
+	// Allow `-r`/`--reverse` to be used either alone (as boolean, e.g. server reverse)
+	// or with a value (port:host:port) like the Node.js version. To support the
+	// "-r" without a value we pre-scan `os.Args` and insert an explicit empty
+	// string as the value when `-r` is present and the next token is another
+	// flag or missing. This mirrors the Node.js `optimist` behaviour.
+	reverseProvided := false
+	// Build newArgs from os.Args, inserting an empty value for -r when needed
+	if len(os.Args) > 1 {
+		newArgs := make([]string, 0, len(os.Args))
+		newArgs = append(newArgs, os.Args[0])
+		for i := 1; i < len(os.Args); i++ {
+			a := os.Args[i]
+			if a == "-r" || a == "--reverse" {
+				reverseProvided = true
+				newArgs = append(newArgs, a)
+				// If next token is missing or is another flag, insert empty value
+				if i+1 >= len(os.Args) || strings.HasPrefix(os.Args[i+1], "-") {
+					newArgs = append(newArgs, "")
+				}
+				continue
+			}
+			newArgs = append(newArgs, a)
+		}
+		os.Args = newArgs
+	}
+
 	// Define flags
 	serverPort := flag.String("s", "", "Run as server, specify listening port")
 	tunnelSpec := flag.String("t", "", "Run as tunnel client (localport:host:port)")
@@ -72,6 +98,7 @@ func main() {
 	certFile := flag.String("cert", "", "Path to public key certificate")
 	logFile := flag.String("log", "", "Path to log file")
 	debug := flag.Bool("debug", false, "Enable debug logging")
+	dryRun := flag.Bool("dry-run", false, "Print parsed arguments and exit (for testing)")
 	help := flag.Bool("h", false, "Show help message")
 
 	flag.Parse()
@@ -81,6 +108,8 @@ func main() {
 		fmt.Println(usage)
 		os.Exit(0)
 	}
+
+	// (dry-run handled after positional args are extracted below)
 
 	// Set up logging
 	if *debug {
@@ -113,19 +142,34 @@ func main() {
 		wsHostURL = args[len(args)-1]
 	}
 
-	// Determine mode and start appropriate component
-	if *serverPort != "" && *reverseSpec == "" {
+	// Dry-run: print parsed arguments and exit for functional testing
+	if *dryRun {
+		fmt.Printf("PARSED server=%q tunnel=%q reverse=%q reverseProvided=%v allow=%q uuid=%q ssl=%q key=%q cert=%q wsHost=%q\n",
+			*serverPort, *tunnelSpec, *reverseSpec, reverseProvided, *allowFile, *clientUUID, *sslFlag, *keyFile, *certFile, wsHostURL)
+		os.Exit(0)
+	}
+
+	// Determine mode and start appropriate component. Match Node.js behavior:
+	// 1) If `-s` provided and `-r` not provided => forward server
+	// 2) Else if `-t` provided => forward client
+	// 3) Else if `-r` provided => if `-s` provided => reverse server else reverse client
+	if *serverPort != "" && !reverseProvided {
 		// Forward tunnel server
 		runForwardServer(*serverPort, *tunnelSpec, useSSL, *keyFile, *certFile)
-	} else if *tunnelSpec != "" && *reverseSpec == "" {
+	} else if *tunnelSpec != "" {
 		// Forward tunnel client
 		runForwardClient(*tunnelSpec, wsHostURL)
-	} else if *reverseSpec != "" && *serverPort != "" {
-		// Reverse tunnel server
-		runReverseServer(*serverPort, useSSL, *keyFile, *certFile, *allowFile)
-	} else if *reverseSpec != "" && *serverPort == "" {
-		// Reverse tunnel client
-		runReverseClient(*reverseSpec, wsHostURL, *clientUUID)
+	} else if reverseProvided {
+		if *serverPort != "" {
+			// Reverse tunnel server (user passed -r without a value)
+			runReverseServer(*serverPort, useSSL, *keyFile, *certFile, *allowFile)
+		} else {
+			// Reverse tunnel client: require a non-empty reverseSpec
+			if *reverseSpec == "" {
+				logger.Fatal("Reverse tunnel specification missing (expected portTunnel:host:port)")
+			}
+			runReverseClient(*reverseSpec, wsHostURL, *clientUUID)
+		}
 	} else {
 		fmt.Println(usage)
 		os.Exit(1)
