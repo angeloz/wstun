@@ -17,6 +17,7 @@ package tunnel
 import (
 	"io"
 	"net"
+	"time"
 	"sync"
 
 	"github.com/MDSLab/wstun/pkg/logger"
@@ -28,31 +29,77 @@ func BindSockets(wsConn *websocket.Conn, tcpConn net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// Buffer pool to reduce allocations
+	var bufPool = sync.Pool{
+		New: func() interface{} { return make([]byte, 32*1024) },
+	}
+
+	// Try to tune TCP socket options when possible
+	if tc, ok := tcpConn.(*net.TCPConn); ok {
+		tc.SetNoDelay(true)
+		tc.SetKeepAlive(true)
+		tc.SetKeepAlivePeriod(30 * time.Second)
+		// Increase kernel buffers; best-effort (ignore errors)
+		_ = tc.SetReadBuffer(64 * 1024)
+		_ = tc.SetWriteBuffer(64 * 1024)
+	}
+
+	// Configure WebSocket connection for liveness detection
+	wsConn.SetReadLimit(1024 * 1024) // 1MB max message size
+	wsConn.SetPongHandler(func(appData string) error {
+		// no-op; pong will extend read deadline if used
+		return nil
+	})
+
+	// Periodic pinger to detect dead peers
+	pingStop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				wsConn.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(10*time.Second))
+			case <-pingStop:
+				return
+			}
+		}
+	}()
+
 	// WebSocket -> TCP
 	go func() {
 		defer wg.Done()
 		defer tcpConn.Close()
 
 		for {
-			messageType, message, err := wsConn.ReadMessage()
+			messageType, r, err := wsConn.NextReader()
 			if err != nil {
-				if err != io.EOF && !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-					logger.Debug("WS read error: %v", err)
+				if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+					logger.Debug("WS NextReader error: %v", err)
 				}
 				return
 			}
 
 			if messageType == websocket.TextMessage {
 				logger.Warn("Received unexpected text message on WebSocket")
+				if rc, ok := r.(io.ReadCloser); ok {
+					rc.Close()
+				}
 				continue
 			}
 
-			if messageType == websocket.BinaryMessage {
-				_, err := tcpConn.Write(message)
-				if err != nil {
+			buf := bufPool.Get().([]byte)
+			_, err = io.CopyBuffer(tcpConn, r, buf)
+			if rc, ok := r.(io.ReadCloser); ok {
+				rc.Close()
+			}
+			bufPool.Put(buf)
+
+			if err != nil {
+				if err != io.EOF {
 					logger.Debug("TCP write error: %v", err)
-					return
 				}
+				return
 			}
 		}
 	}()
@@ -62,9 +109,11 @@ func BindSockets(wsConn *websocket.Conn, tcpConn net.Conn) {
 		defer wg.Done()
 		defer wsConn.Close()
 
-		buffer := make([]byte, 32*1024) // 32KB buffer
+		buf := bufPool.Get().([]byte)
+		defer bufPool.Put(buf)
+
 		for {
-			n, err := tcpConn.Read(buffer)
+			n, err := tcpConn.Read(buf)
 			if err != nil {
 				if err != io.EOF {
 					logger.Debug("TCP read error: %v", err)
@@ -73,7 +122,17 @@ func BindSockets(wsConn *websocket.Conn, tcpConn net.Conn) {
 			}
 
 			if n > 0 {
-				err = wsConn.WriteMessage(websocket.BinaryMessage, buffer[:n])
+				w, err := wsConn.NextWriter(websocket.BinaryMessage)
+				if err != nil {
+					logger.Debug("WS NextWriter error: %v", err)
+					return
+				}
+
+				_, err = w.Write(buf[:n])
+				if err1 := w.Close(); err == nil {
+					err = err1
+				}
+
 				if err != nil {
 					logger.Debug("WS write error: %v", err)
 					return
@@ -83,5 +142,6 @@ func BindSockets(wsConn *websocket.Conn, tcpConn net.Conn) {
 	}()
 
 	wg.Wait()
+	close(pingStop)
 	logger.Info("[SYSTEM] --> Connection closed")
 }

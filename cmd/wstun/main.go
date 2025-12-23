@@ -17,6 +17,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"strings"
 
@@ -114,6 +116,16 @@ func main() {
 	// Set up logging
 	if *debug {
 		logger.SetLevel(logger.DEBUG)
+	}
+
+	// Start pprof server when debug is enabled
+	if *debug {
+		go func() {
+			logger.Info("[PPROF] pprof listening on http://localhost:6060/debug/pprof/")
+			if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+				logger.Error("pprof server error: %v", err)
+			}
+		}()
 	}
 
 	if *logFile != "" {
